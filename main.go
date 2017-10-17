@@ -28,7 +28,7 @@ func tx(s string) {
 		fmt.Printf("resolve to addr failed: %v\n\n", err)
 		return
 	}
-	_, err = udpSocket.WriteTo([]byte(s), broadcast)
+	_, err = udpSocket.WriteTo([]byte(fmt.Sprintf("%s\x0d", s)), broadcast)
 	if err != nil {
 		fmt.Printf("tx failed: %v\n", err)
 	}
@@ -78,8 +78,29 @@ func main() {
 	setupNetwork()
 	findDevices()
 
-	// waveWriter("test.wav", device, time.After(time.Second*5))
-	return
+	var stopChan chan bool
+	buf := make([]byte, 255)
+	for {
+		_, _, err := udpSocket.ReadFrom(buf)
+		if err != nil {
+			fail(err)
+		}
+		switch {
+		case string(buf[0:6]) == "record ":
+			stopChan = make(chan bool)
+			waveWriter(string(buf[7:]), recordDev, stopChan)
+		case string(buf[0:4]) == "play ":
+			stopChan = make(chan bool)
+			waveReader(string(buf[5:]), playbackDev, stopChan)
+		case string(buf[0:3]) == "stop":
+			if stopChan != nil {
+				close(stopChan)
+				stopChan = nil
+			} else {
+				tx("stop failed")
+			}
+		}
+	}
 }
 
 func alsaFormatBits(f alsa.FormatType) uint16 {
@@ -102,8 +123,17 @@ func alsaFormatBits(f alsa.FormatType) uint16 {
 	return 0
 }
 
-func waveWriter(fn string, d *alsa.Device, done <-chan time.Time) {
+func waveReader(fn string, d *alsa.Device, done <-chan bool) {
+	fmt.Printf("unimplemented playback (fn=%v, d=%v)\n", fn, d)
+	tx("stopped playing")
+}
+
+func waveWriter(fn string, d *alsa.Device, done <-chan bool) {
+	fmt.Printf("record (fn=%v, d=%v)\n", fn, d)
+
 	var err error
+	tx(fmt.Sprintf("recording %s\r", fn))
+
 	if err = d.Open(); err != nil {
 		fail(fmt.Errorf("err=%v, path=%v", err, d.Path))
 	}
@@ -150,6 +180,7 @@ func waveWriter(fn string, d *alsa.Device, done <-chan time.Time) {
 	for {
 		select {
 		case <-done:
+			tx("stopped recording")
 			return
 
 		default:
