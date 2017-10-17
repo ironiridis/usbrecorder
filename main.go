@@ -3,6 +3,7 @@ package main
 // import "syscall"
 import (
 	"fmt"
+	"net"
 	"os"
 	"time"
 
@@ -10,37 +11,75 @@ import (
 	"github.com/ironiridis/alsa"
 )
 
-func main() {
-	cards, err := alsa.OpenCards()
+var udpSocket net.PacketConn
+var recordDev, playbackDev *alsa.Device
+
+func setupNetwork() {
+	u, err := net.ListenPacket("udp", "255.255.255.255:7171")
 	if err != nil {
 		panic(err)
 	}
-	defer alsa.CloseCards(cards)
+	udpSocket = u
+}
 
-	for _, card := range cards {
-		fmt.Printf("Card: %+q\n", card)
-		devices, err := card.Devices()
-		if err != nil {
-			panic(err)
-		}
-		for _, device := range devices {
-			fmt.Printf("  Device: %s (Type: %s, Play: %v, Record: %v)\n", device, device.Type, device.Play, device.Record)
-			if card.String() == "USB Audio Device" && device.Record {
-				waveWriter("test.wav", device, time.After(time.Second*5))
-			}
-		}
+func tx(s string) {
+	broadcast, err := net.ResolveUDPAddr("udp", "255.255.255.255:7171")
+	if err != nil {
+		fmt.Printf("resolve to addr failed: %v\n\n", err)
+		return
 	}
-	return
+	_, err = udpSocket.WriteTo([]byte(s), broadcast)
+	if err != nil {
+		fmt.Printf("tx failed: %v\n", err)
+	}
 }
 
 func fail(err error) {
 	// future:
 	//  log error
-	//  broadcast to network
-	//  gracefully unmount
+	//  gracefully unmount (or don't, since we're r/o anyway)
 
-	// panic to reboot (since we're running at PID 1)
+	// announce to network to be logged by ... somebody
+	tx(err.Error())
+
+	// wait, then panic to reboot (since we're running at PID 1)
+	time.Sleep(10 * time.Second)
 	panic(err)
+}
+
+func findDevices() {
+	cards, err := alsa.OpenCards()
+	if err != nil {
+		fail(err)
+	}
+	defer alsa.CloseCards(cards)
+
+	for _, card := range cards {
+		devices, err := card.Devices()
+		if err != nil {
+			fail(err)
+		}
+		if card.String() == "USB Audio Device" {
+			for _, device := range devices {
+				if device.Record {
+					recordDev = device
+				} else if device.Play {
+					playbackDev = device
+				}
+			}
+		}
+	}
+	if recordDev == nil || playbackDev == nil {
+		fail(fmt.Errorf("couldn't find both record and playback devices"))
+	}
+}
+
+func main() {
+	setupNetwork()
+	findDevices()
+
+	// waveWriter("test.wav", device, time.After(time.Second*5))
+	return
 }
 
 func alsaFormatBits(f alsa.FormatType) uint16 {
